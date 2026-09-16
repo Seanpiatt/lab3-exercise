@@ -1,12 +1,14 @@
 #ifndef SHARED_PTR_HEADER
 #define SHARED_PTR_HEADER
+#include <utility>
+#include <cassert>
 
 class ControlBlockBase {
 public:
-    ControlBlockBase(); // TODO: implement the default constructor.
+    ControlBlockBase(): mRefCount(1) {} // TODO: implement the default constructor.
 
     // dtor is virtual, so that we can call derived class's dtor from a ptr to this base class.
-    virtual ~ControlBlockBase(); // TODO: implement the destructor.
+    virtual ~ControlBlockBase( ) {}// TODO: implement the destructor.
 
     // pure virtual function; must be overriden by derived classes
     virtual void* managedAddress() = 0;
@@ -18,53 +20,98 @@ public:
     long increment()
     {
         // TODO: increment refcount by 1 and return result.
+        mRefCount++;
+        return mRefCount;
     }
 
     long decrement()
     {
         // TODO: decrement refcount by 1 and return result.
+        mRefCount--;
+        return mRefCount;
     }
 
     long refCount() const
     {
         // TODO: just return the refcount.
+        return mRefCount;
     }
 
 private:
-    // TODO: add field(s) which both control block types need to have
+    long mRefCount;
 };
 
 template <typename T>
-class ShredPtr {
+class ControlBlockBasic : public ControlBlockBase {
 public:
-    ShredPtr() : mItem(nullptr) {}
-    explicit ShredPtr(T* item) : mItem(item) {}
-    ~ShredPtr() { delete mItem; }
+    //Constructor
+    ControlBlockBasic(T* something) : mSomething(something) {}
 
-    ShredPtr(const ShredPtr&) = delete;
-    ShredPtr& operator=(const ShredPtr&) = delete;
+    //Override
+    void* managedAddress() override {
+        return mSomething;
+    }
+    
+    ~ControlBlockBasic() {delete mSomething;}
 
-    ShredPtr(ShredPtr&& other) noexcept : mItem(other.mItem) {
-        other.mItem = nullptr;
+    ControlBlockBasic(const ControlBlockBasic&) = delete;
+    ControlBlockBasic& operator=(const ControlBlockBasic&) = delete;
+
+
+private:
+    T* mSomething;
+};
+
+
+template <typename T>
+class SharedPtr {
+public:
+    SharedPtr() : mItem(nullptr), mControlBlock(nullptr) {}
+    explicit SharedPtr(T* item) : mItem(item), mControlBlock(new ControlBlockBasic<T>(item)) {}
+    ~SharedPtr() {
+        if(mControlBlock!= nullptr){
+            if (mControlBlock->decrement() == 0){
+            
+                delete mControlBlock;
+            }
+        }
+
     }
 
-    ShredPtr& operator=(ShredPtr&& other) noexcept {
+    SharedPtr& operator=(const SharedPtr& other) {
+        if (this != &other ) {
+            if(mControlBlock != nullptr && this->mControlBlock->decrement()== 0){
+                delete this->mControlBlock;
+            }
+            this->mItem = other.mItem;
+            this->mControlBlock = other.mControlBlock;
+
+            this->mControlBlock->increment();
+        }
+        return *this;
+    }
+    SharedPtr& operator=(SharedPtr&& other) noexcept {
         if (this != &other) {
-            delete mItem;
-            mItem = other.mItem;
+            if (mControlBlock != nullptr && mControlBlock->decrement() == 0) {
+                delete mControlBlock;
+            }
+            this->mItem = other.mItem;
+            this->mControlBlock = other.mControlBlock;
             other.mItem = nullptr;
+            other.mControlBlock = nullptr;
         }
         return *this;
     }
 
-    T* release() {
-        T* temp = mItem;
-        mItem = nullptr;
-        return temp;
+    SharedPtr(const SharedPtr& other): mItem(other.mItem), mControlBlock(other.mControlBlock){
+        mControlBlock->increment();
     }
 
-    template <typename U>
-    ShredPtr(ShredPtr<U>&& other) : mItem(other.release()) {}
+    SharedPtr(SharedPtr&& other) noexcept : mItem(other.mItem), mControlBlock(other.mControlBlock) {
+        other.mItem = nullptr;
+        other.mControlBlock = nullptr;
+    }
+
 
     T& operator*() const {
         assert(mItem != nullptr);
@@ -79,21 +126,37 @@ public:
     T* get() const {
         return mItem;
     }
+    
+    long useCount() const{
+        if (mControlBlock != nullptr) {
+            return mControlBlock->refCount();
+        }
+        else{
+            return 0;
+        }
+        
+    }
 
-    bool operator==(const ShredPtr& other) const {
+    bool operator==(const SharedPtr& other) const {
         return mItem == other.mItem;
     }
 
     void reset(T* newPtr = nullptr) {
-        T* old = mItem;
-        mItem = newPtr;
-        delete old;
+        if (mControlBlock != nullptr && mControlBlock->decrement() == 0) {
+            delete mControlBlock;
+        }
+        mItem = newPtr;  
+        mControlBlock = new ControlBlockBasic<T>(newPtr);
+        
     }
 
-    void swap(ShredPtr& other) noexcept {
+    void swap(SharedPtr& other) noexcept {
         T* temp = mItem;
+        ControlBlockBase* temp2 = mControlBlock;
         mItem = other.mItem;
+        mControlBlock = other.mControlBlock;
         other.mItem = temp;
+        other.mControlBlock = temp2;
     }
 
     explicit operator bool() const {
@@ -102,11 +165,12 @@ public:
 
 private:
     T* mItem;
+    ControlBlockBase* mControlBlock;
 };
 
 template <typename T, typename... Args>
-ShredPtr<T> makeUnique(Args&&... args) {
-    return ShredPtr<T>(new T(std::forward<Args>(args)...));
+SharedPtr<T> makeSharedBasic(Args&&... args) {
+    return SharedPtr<T>(new T(std::forward<Args>(args)...));
 }
 
 #endif
